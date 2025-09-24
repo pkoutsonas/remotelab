@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Relay Control, Breadboard & Voltage Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 20px;
+      }
+
+      /* Relay Controls */
+      .controls {
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+        width: 20%;
+      }
+
+      .relay-control {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .status-indicator {
+        width: 15px;
+        height: 15px;
+        border-radius: 50%;
+        background-color: red; /* Default: OFF */
+        border: 1px solid black;
+      }
+
+      /* Breadboard */
+      .breadboard-container {
+        text-align: center;
+        width: 40%;
+      }
+
+      canvas {
+        border: 1px solid black;
+        background: white;
+        cursor: crosshair;
+      }
+
+      #info {
+        margin-top: 10px;
+        font-size: 14px;
+        color: #333;
+      }
+
+      /* Chart */
+      .chart-container {
+        width: 40%;
+      }
+
+      .chart-container canvas {
+        width: 100%;
+        max-width: 500px;
+        height: 300px;
+      }
+
+      h2 {
+        margin-bottom: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Αριστερά: Relay Controls -->
+    <div class="controls">
+      <h2>Relay Controls</h2>
+      <div id="relays"></div>
+    </div>
+
+    <!-- Κέντρο: Breadboard -->
+    <div class="breadboard-container">
+      <h2>Virtual Breadboard</h2>
+      <p>Κάνε κλικ σε δύο τρύπες για να βάλεις καλώδιο</p>
+      <canvas id="breadboard" width="500" height="300"></canvas>
+      <div id="info">Επιλεγμένο σημείο: Κανένα</div>
+    </div>
+
+    <!-- Δεξιά: Voltage Chart -->
+    <div class="chart-container">
+      <h2>Voltage Measurements</h2>
+      <canvas id="voltageChart"></canvas>
+    </div>
+
+    <script>
+      /* ---------------- RELAY CONTROLS ---------------- */
+      let relayState = {};
+
+      function createRelayControls() {
+        const relayContainer = document.getElementById("relays");
+        for (let i = 1; i <= 8; i++) {
+          relayState[`relay${i}`] = false;
+          const relayDiv = document.createElement("div");
+          relayDiv.classList.add("relay-control");
+          relayDiv.innerHTML = `
+            <button onclick="toggleRelay(${i})">Toggle Relay ${i}</button>
+            <div id="indicator${i}" class="status-indicator"></div>
+          `;
+          relayContainer.appendChild(relayDiv);
+        }
+      }
+
+      async function toggleRelay(relay) {
+        relayState[`relay${relay}`] = !relayState[`relay${relay}`];
+        try {
+          const response = await fetch(`/toggle_relay/${relay}`, {
+            method: "POST",
+          });
+          const data = await response.json();
+          if (data.success) {
+            relayState[`relay${relay}`] = data.state;
+            document.getElementById(`indicator${relay}`).style.backgroundColor =
+              relayState[`relay${relay}`] ? "green" : "red";
+          } else {
+            console.error("Relay toggle failed:", data.error);
+          }
+        } catch (error) {
+          console.error("Error toggling relay:", error);
+        }
+      }
+
+      /* ---------------- VOLTAGE CHART ---------------- */
+      const ctx = document.getElementById("voltageChart").getContext("2d");
+      const voltageChart = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels: [],
+          datasets: [
+            {
+              label: "Voltage (V)",
+              data: [],
+              borderColor: "rgba(75, 192, 192, 1)",
+              backgroundColor: "rgba(75, 192, 192, 0.2)",
+              tension: 0.1,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          scales: {
+            x: { title: { display: true, text: "Time" } },
+            y: {
+              title: { display: true, text: "Voltage (V)" },
+              min: 0,
+              max: 5,
+            },
+          },
+        },
+      });
+
+      async function fetchVoltage() {
+        try {
+          const response = await fetch("/voltage");
+          const data = await response.json();
+          const time = new Date(data.timestamp * 1000).toLocaleTimeString();
+
+          voltageChart.data.labels.push(time);
+          voltageChart.data.datasets[0].data.push(data.voltage);
+
+          if (voltageChart.data.labels.length > 50) {
+            voltageChart.data.labels.shift();
+            voltageChart.data.datasets[0].data.shift();
+          }
+
+          voltageChart.update();
+        } catch (error) {
+          console.error("Error fetching voltage:", error);
+        }
+      }
+
+      /* ---------------- BREADBOARD SIMULATOR ---------------- */
+      const canvas = document.getElementById("breadboard");
+      const bctx = canvas.getContext("2d");
+
+      const holeSpacing = 20;
+      const rows = 10;
+      const cols = 20;
+      const holes = [];
+      let selectedHole = null;
+      const wires = [];
+
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          holes.push({ x: 30 + c * holeSpacing, y: 30 + r * holeSpacing });
+        }
+      }
+
+      function drawBoard() {
+        bctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // τρύπες
+        holes.forEach((h, i) => {
+          bctx.beginPath();
+          bctx.arc(h.x, h.y, 5, 0, Math.PI * 2);
+          bctx.fillStyle = selectedHole === i ? "orange" : "black";
+          bctx.fill();
+        });
+
+        // καλώδια
+        wires.forEach((w) => {
+          const h1 = holes[w[0]];
+          const h2 = holes[w[1]];
+          bctx.beginPath();
+          bctx.moveTo(h1.x, h1.y);
+          bctx.lineTo(h2.x, h2.y);
+          bctx.strokeStyle = "red";
+          bctx.lineWidth = 2;
+          bctx.stroke();
+        });
+      }
+
+      function getHoleAt(x, y) {
+        return holes.findIndex((h) => Math.hypot(h.x - x, h.y - y) < 8);
+      }
+
+      canvas.addEventListener("click", (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        const idx = getHoleAt(x, y);
+        if (idx === -1) return;
+
+        if (selectedHole === null) {
+          selectedHole = idx;
+          document.getElementById(
+            "info"
+          ).innerText = `Πρώτο σημείο: Hole ${idx}`;
+        } else {
+          wires.push([selectedHole, idx]);
+          document.getElementById(
+            "info"
+          ).innerText = `Συνδέθηκε Hole ${selectedHole} με Hole ${idx}`;
+          selectedHole = null;
+        }
+        drawBoard();
+      });
+
+      /* ---------------- INIT ---------------- */
+      createRelayControls();
+      setInterval(fetchVoltage, 1000);
+      drawBoard();
+    </script>
+  </body>
+</html>
